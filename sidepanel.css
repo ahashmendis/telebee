@@ -26,6 +26,10 @@ button, input {
   font: inherit;
 }
 button { cursor: pointer; font-weight: 700; }
+.mediaControls { display: flex; gap: 6px; }
+.mediaControls button { background: #334155; font-size: 12px; }
+.mediaControls button.active { background: #16a34a; border-color: #22c55e; }
+.mediaControls button.denied { background: #991b1b; border-color: #ef4444; }
 header button { background: #334155; }
 .room { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px 12px; }
 .room input { text-transform: uppercase; }

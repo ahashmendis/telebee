@@ -80,17 +80,66 @@ async function enableMedia() {
   if (localStream) return;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 } },
-      audio: true
+      video: { width: { ideal: 640 }, height: { ideal: 360 } },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
     });
     addVideo(peerId, localStream);
     for (const pc of peerConnections.values()) {
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
-    document.querySelector("#mediaBtn").textContent = "Mic/Camera on";
+    updateMediaButtons();
   } catch (error) {
-    addMessage(error.message, "Media");
+    const message = error.name === "NotAllowedError"
+      ? "Camera and microphone permission was denied."
+      : error.message;
+    addMessage(message, "Media");
+    document.querySelector("#micBtn").classList.add("denied");
+    document.querySelector("#cameraBtn").classList.add("denied");
   }
+}
+
+async function ensureMedia() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    addMessage("Camera and microphone are not supported in this browser context.", "Media");
+    return false;
+  }
+  if (!localStream) await enableMedia();
+  return Boolean(localStream);
+}
+
+function updateMediaButtons() {
+  const mic = localStream?.getAudioTracks()[0];
+  const camera = localStream?.getVideoTracks()[0];
+  const micBtn = document.querySelector("#micBtn");
+  const cameraBtn = document.querySelector("#cameraBtn");
+
+  micBtn.textContent = mic?.enabled ? "Mic: on" : "Mic: off";
+  micBtn.setAttribute("aria-pressed", String(Boolean(mic?.enabled)));
+  micBtn.classList.toggle("active", Boolean(mic?.enabled));
+  micBtn.classList.remove("denied");
+
+  cameraBtn.textContent = camera?.enabled ? "Camera: on" : "Camera: off";
+  cameraBtn.setAttribute("aria-pressed", String(Boolean(camera?.enabled)));
+  cameraBtn.classList.toggle("active", Boolean(camera?.enabled));
+  cameraBtn.classList.remove("denied");
+}
+
+async function toggleTrack(kind) {
+  if (!await ensureMedia()) return;
+  const track = kind === "audio"
+    ? localStream.getAudioTracks()[0]
+    : localStream.getVideoTracks()[0];
+  if (!track) return;
+  track.enabled = !track.enabled;
+  updateMediaButtons();
+  addMessage(
+    `${kind === "audio" ? "Microphone" : "Camera"} ${track.enabled ? "on" : "off"}`,
+    "Media"
+  );
 }
 
 function createPeer(remoteId) {
@@ -175,6 +224,7 @@ function connectRoom() {
     if (message.type === "room-joined") {
       statusEl.textContent = `In room ${roomCode}`;
       addMessage(`Joined room ${roomCode}`);
+      void ensureMedia();
       for (const remoteId of message.peers) await createOffer(remoteId);
       if (message.state?.url) {
         await openOrSyncUrl(message.state.url);
@@ -238,7 +288,8 @@ function connectRoom() {
 }
 
 document.querySelector("#joinBtn").addEventListener("click", connectRoom);
-document.querySelector("#mediaBtn").addEventListener("click", enableMedia);
+document.querySelector("#micBtn").addEventListener("click", () => toggleTrack("audio"));
+document.querySelector("#cameraBtn").addEventListener("click", () => toggleTrack("video"));
 
 roomInput.addEventListener("input", () => {
   roomInput.value = roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");

@@ -8,7 +8,10 @@
   <body>
     <header>
       <div class="brand">Telebee</div>
-      <button id="mediaBtn" title="Turn camera and microphone on">Camera</button>
+      <div class="mediaControls">
+        <button id="micBtn" type="button" aria-pressed="false" title="Allow microphone access and mute or unmute">Mic: off</button>
+        <button id="cameraBtn" type="button" aria-pressed="false" title="Allow camera access and turn it on or off">Camera: off</button>
+      </div>
     </header>
 
     <section class="room">
