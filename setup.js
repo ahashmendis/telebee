@@ -145,10 +145,11 @@ if (exposeWithNgrok) {
     const wssUrl = `wss://${existingPublicUrl.replace(/^https?:\/\//, "")}`;
     console.log(`\nTelebee public WSS URL: ${wssUrl}`);
     console.log("Share this WSS URL with the extension client.");
-    await new Promise(() => {});
-  }
-
-  const ngrokArgs = ["http", String(process.env.PORT || 3001)];
+    process.on("SIGINT", () => process.exit(0));
+    process.on("SIGTERM", () => process.exit(0));
+    setInterval(() => {}, 60_000);
+  } else {
+    const ngrokArgs = ["http", String(process.env.PORT || 3001)];
   if (ngrokDomain) {
     const domain = ngrokDomain
       .replace(/^https?:\/\//, "")
@@ -185,7 +186,8 @@ if (exposeWithNgrok) {
     console.log("ngrok started. Copy the HTTPS forwarding URL and use it with wss://");
   }
 
-  const exitCode = await new Promise(resolve => tunnel.once("exit", resolve));
-  if (server) server.kill();
-  process.exit(exitCode || 0);
+    const exitCode = await new Promise(resolve => tunnel.once("exit", resolve));
+    if (server) server.kill();
+    process.exit(exitCode || 0);
+  }
 }
