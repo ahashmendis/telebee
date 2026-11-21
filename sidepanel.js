@@ -7,6 +7,7 @@ let roomCode = "";
 let applyingPlayback = false;
 let lastSharedUrl = "";
 let playbackApplyTimer = null;
+let lastAppliedPlayback = null;
 let micDeviceId = "";
 let cameraDeviceId = "";
 
@@ -63,15 +64,23 @@ async function setPlayback(state) {
 
 async function applyRemotePlayback(playback) {
   if (!playback) return;
-  applyingPlayback = true;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await setPlayback({
-      action: playback.paused ? "pause" : "play",
-      time: playback.time,
-      rate: playback.rate
-    });
-    await new Promise(resolve => setTimeout(resolve, 750));
+  if (lastAppliedPlayback &&
+      lastAppliedPlayback.paused === playback.paused &&
+      lastAppliedPlayback.rate === playback.rate &&
+      Math.abs(lastAppliedPlayback.time - playback.time) < (playback.paused ? 1 : 2.5)) {
+    return;
   }
+  lastAppliedPlayback = {
+    paused: playback.paused,
+    time: playback.time,
+    rate: playback.rate
+  };
+  applyingPlayback = true;
+  await setPlayback({
+    action: playback.paused ? "pause" : "play",
+    time: playback.time,
+    rate: playback.rate
+  });
   playbackApplyTimer = setTimeout(() => {
     applyingPlayback = false;
   }, 1000);

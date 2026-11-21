@@ -1,6 +1,7 @@
 let lastVideo = null;
 let playbackTimer = null;
 let ignoreLocalUpdatesUntil = 0;
+let lastBroadcastState = null;
 
 function findVideo() {
   const videos = [...document.querySelectorAll("video")].filter(video => {
@@ -30,6 +31,13 @@ function broadcastPlayback() {
   if (Date.now() < ignoreLocalUpdatesUntil) return;
   const current = state();
   if (!current.found) return;
+  if (lastBroadcastState &&
+      lastBroadcastState.paused === current.paused &&
+      Math.abs(lastBroadcastState.time - current.time) < (current.paused ? 1 : 4) &&
+      lastBroadcastState.rate === current.rate) {
+    return;
+  }
+  lastBroadcastState = current;
   chrome.runtime.sendMessage({
     type: "PLAYBACK_STATE",
     state: current
@@ -81,7 +89,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     };
     const apply = () => {
       if (typeof message.time === "number" && Number.isFinite(message.time)) {
-        if (Math.abs(video.currentTime - message.time) > 0.75) {
+        const seekThreshold = message.action === "pause" ? 0.5 : 2.5;
+        if (Math.abs(video.currentTime - message.time) > seekThreshold) {
           try {
             if (video.readyState >= 1) {
               video.currentTime = Math.max(0, message.time);
@@ -139,7 +148,7 @@ playbackObserver.observe(document.documentElement, {
   subtree: true
 });
 
-playbackTimer = setInterval(broadcastPlayback, 2000);
+playbackTimer = setInterval(broadcastPlayback, 5000);
 
 window.addEventListener("message", event => {
   if (event.data?.type !== "TELEBEE_SET_PLAYBACK") return;
