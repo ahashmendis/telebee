@@ -6,6 +6,9 @@ let localStream = null;
 let roomCode = "";
 let applyingPlayback = false;
 let lastSharedUrl = "";
+let playbackApplyTimer = null;
+let micDeviceId = "";
+let cameraDeviceId = "";
 
 const roomInput = document.querySelector("#roomCode");
 const serverInput = document.querySelector("#serverUrl");
@@ -29,7 +32,10 @@ async function openOrSyncUrl(url) {
   if (!url) return;
   const tab = await getActiveTab();
   if (!tab?.id) return;
-  if (tab.url !== url) await chrome.tabs.update(tab.id, { url });
+  if (tab.url !== url) {
+    await chrome.tabs.update(tab.id, { url });
+    await new Promise(resolve => setTimeout(resolve, 2500));
+  }
   lastSharedUrl = url;
 }
 
@@ -46,9 +52,29 @@ async function getPlayback() {
 async function setPlayback(state) {
   const tab = await getActiveTab();
   if (!tab?.id) return;
-  try {
-    await chrome.tabs.sendMessage(tab.id, { type: "SET_PLAYBACK", ...state });
-  } catch {}
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "SET_PLAYBACK", ...state });
+      return;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
+
+async function applyRemotePlayback(playback) {
+  if (!playback) return;
+  applyingPlayback = true;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await setPlayback({
+      action: playback.paused ? "pause" : "play",
+      time: playback.time,
+      rate: playback.rate
+    });
+    await new Promise(resolve => setTimeout(resolve, 750));
+  }
+  playbackApplyTimer = setTimeout(() => {
+    applyingPlayback = false;
+  }, 1000);
 }
 
 function addMessage(text, author = "System") {
@@ -92,6 +118,7 @@ async function enableMedia() {
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
     updateMediaButtons();
+    await refreshDevices();
   } catch (error) {
     const message = error.name === "NotAllowedError"
       ? "Camera and microphone permission was denied."
@@ -109,6 +136,84 @@ async function ensureMedia() {
   }
   if (!localStream) await enableMedia();
   return Boolean(localStream);
+}
+
+async function refreshDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const micSelect = document.querySelector("#micSelect");
+  const cameraSelect = document.querySelector("#cameraSelect");
+
+  micSelect.innerHTML = "";
+  cameraSelect.innerHTML = "";
+
+  for (const device of devices.filter(item => item.kind === "audioinput")) {
+    micSelect.add(new Option(device.label || "Microphone", device.deviceId));
+  }
+  for (const device of devices.filter(item => item.kind === "videoinput")) {
+    cameraSelect.add(new Option(device.label || "Camera", device.deviceId));
+  }
+
+  if (!micSelect.options.length) micSelect.add(new Option("No microphone found", ""));
+  if (!cameraSelect.options.length) cameraSelect.add(new Option("No camera found", ""));
+  if (micDeviceId) micSelect.value = micDeviceId;
+  if (cameraDeviceId) cameraSelect.value = cameraDeviceId;
+}
+
+async function replaceMediaTrack(kind, deviceId) {
+  if (!await ensureMedia()) return;
+  const constraints = kind === "audio"
+    ? {
+        audio: {
+          deviceId: { exact: deviceId },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: false
+      }
+    : {
+        audio: false,
+        video: {
+          deviceId: { exact: deviceId },
+          width: { ideal: 640 },
+          height: { ideal: 360 }
+        }
+      };
+
+  try {
+    const replacement = await navigator.mediaDevices.getUserMedia(constraints);
+    const newTrack = kind === "audio"
+      ? replacement.getAudioTracks()[0]
+      : replacement.getVideoTracks()[0];
+    if (!newTrack) return;
+
+    const oldTrack = kind === "audio"
+      ? localStream.getAudioTracks()[0]
+      : localStream.getVideoTracks()[0];
+
+    if (oldTrack) {
+      oldTrack.stop();
+      localStream.removeTrack(oldTrack);
+    }
+    localStream.addTrack(newTrack);
+
+    for (const pc of peerConnections.values()) {
+      const sender = pc.getSenders().find(item => item.track?.kind === kind);
+      if (sender) await sender.replaceTrack(newTrack);
+      else pc.addTrack(newTrack, localStream);
+    }
+
+    if (kind === "audio") micDeviceId = deviceId;
+    else cameraDeviceId = deviceId;
+
+    addVideo(peerId, localStream);
+    updateMediaButtons();
+    await refreshDevices();
+    addMessage(`${kind === "audio" ? "Microphone" : "Camera"} changed`, "Media");
+  } catch (error) {
+    addMessage(error.message, "Media");
+  }
 }
 
 function updateMediaButtons() {
@@ -231,13 +336,7 @@ function connectRoom() {
         await new Promise(resolve => setTimeout(resolve, 1200));
       }
       if (message.state?.playback) {
-        applyingPlayback = true;
-        await setPlayback({
-          action: message.state.playback.paused ? "pause" : "play",
-          time: message.state.playback.time,
-          rate: message.state.playback.rate
-        });
-        setTimeout(() => { applyingPlayback = false; }, 1500);
+        await applyRemotePlayback(message.state.playback);
       }
       const playback = await getPlayback();
       if (playback.found && !message.state?.playback) {
@@ -252,13 +351,7 @@ function connectRoom() {
         await new Promise(resolve => setTimeout(resolve, 1200));
       }
       if (state.playback) {
-        applyingPlayback = true;
-        await setPlayback({
-          action: state.playback.paused ? "pause" : "play",
-          time: state.playback.time,
-          rate: state.playback.rate
-        });
-        setTimeout(() => { applyingPlayback = false; }, 1500);
+        await applyRemotePlayback(state.playback);
       }
     } else if (message.type === "peer-left") {
       peerConnections.get(message.peerId)?.close();
@@ -269,13 +362,7 @@ function connectRoom() {
     } else if (message.type === "chat") {
       addMessage(message.text, "Guest");
     } else if (message.type === "playback") {
-      applyingPlayback = true;
-      await setPlayback({
-        action: message.state.paused ? "pause" : "play",
-        time: message.state.time,
-        rate: message.state.rate
-      });
-      setTimeout(() => { applyingPlayback = false; }, 1500);
+      await applyRemotePlayback(message.state);
     }
   };
 
@@ -290,6 +377,27 @@ function connectRoom() {
 document.querySelector("#joinBtn").addEventListener("click", connectRoom);
 document.querySelector("#micBtn").addEventListener("click", () => toggleTrack("audio"));
 document.querySelector("#cameraBtn").addEventListener("click", () => toggleTrack("video"));
+document.querySelector("#micSelect").addEventListener("change", event => {
+  if (event.target.value) void replaceMediaTrack("audio", event.target.value);
+});
+document.querySelector("#cameraSelect").addEventListener("change", event => {
+  if (event.target.value) void replaceMediaTrack("video", event.target.value);
+});
+document.querySelector("#chatToggle").addEventListener("click", event => {
+  const hidden = document.body.classList.toggle("chat-hidden");
+  event.target.textContent = hidden ? "Chat: off" : "Chat: on";
+  event.target.setAttribute("aria-pressed", String(!hidden));
+});
+
+navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
+document.querySelector("#micSelect").addEventListener("change", event => {
+  if (event.target.value) void replaceMediaTrack("audio", event.target.value);
+});
+document.querySelector("#cameraSelect").addEventListener("change", event => {
+  if (event.target.value) void replaceMediaTrack("video", event.target.value);
+});
+
+navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
 
 roomInput.addEventListener("input", () => {
   roomInput.value = roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -334,9 +442,14 @@ document.querySelector("#syncBtn").addEventListener("click", async () => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type !== "PLAYBACK_STATE" || applyingPlayback || !socket) return;
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "playback", state: message.state }));
+  if (message.type === "PLAYBACK_ERROR") {
+    addMessage(`Playback error: ${message.error}`, "Media");
+  }
+  if (message.type === "PLAYBACK_STATE") {
+    if (applyingPlayback || !socket) return;
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "playback", state: message.state }));
+    }
   }
 });
 

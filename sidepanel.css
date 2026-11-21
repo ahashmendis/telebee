@@ -4,11 +4,15 @@ body {
   margin: 0;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto auto auto auto auto 1fr;
   background: #0b1020;
   color: #f8fafc;
   font: 14px system-ui, sans-serif;
 }
+body.chat-hidden {
+  grid-template-rows: auto auto auto auto auto auto auto;
+}
+body.chat-hidden .chat { display: none; }
 header {
   display: flex;
   align-items: center;
@@ -30,6 +34,9 @@ button { cursor: pointer; font-weight: 700; }
 .mediaControls button { background: #334155; font-size: 12px; }
 .mediaControls button.active { background: #16a34a; border-color: #22c55e; }
 .mediaControls button.denied { background: #991b1b; border-color: #ef4444; }
+.devices { display: grid; gap: 6px; padding: 8px 12px; border-bottom: 1px solid #26324d; }
+.devices label { display: grid; gap: 3px; color: #94a3b8; font-size: 12px; }
+.devices select { width: 100%; border: 1px solid #334155; border-radius: 8px; background: #172036; color: white; padding: 7px; font: inherit; }
 header button { background: #334155; }
 .room { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px 12px; }
 .room input { text-transform: uppercase; }
