@@ -1,0 +1,17 @@
+{
+  "name": "telebee",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "node server.js",
+    "setup": "node setup.js",
+    "start": "node setup.js",
+    "start-public": "node setup.js --ngrok"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  }
+}

@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: telebee-server
+    runtime: node
+    buildCommand: npm ci
+    startCommand: node server.js
+    healthCheckPath: /health

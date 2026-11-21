@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand">Telebee</div>
+      <button id="mediaBtn" title="Turn camera and microphone on">Camera</button>
+    </header>
+
+    <section class="room">
+      <input id="roomCode" maxlength="12" placeholder="ROOM CODE" autocomplete="off">
+      <button id="joinBtn">Join</button>
+    </section>
+
+    <section class="server">
+      <input id="serverUrl" placeholder="wss://your-server.example">
+    </section>
+
+    <div id="status" class="status">Not connected</div>
+
+    <section id="videos" class="videos"></section>
+
+    <section class="sync">
+      <button id="syncBtn">Sync to me</button>
+      <span id="syncText">No video detected</span>
+    </section>
+
+    <section class="chat">
+      <div id="messages"></div>
+      <form id="chatForm">
+        <input id="chatInput" placeholder="Message..." autocomplete="off">
+        <button>Send</button>
+      </form>
+    </section>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

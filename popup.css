@@ -1,0 +1,19 @@
+body {
+  width: 220px;
+  margin: 0;
+  padding: 16px;
+  font: 14px system-ui, sans-serif;
+  background: #111827;
+  color: white;
+}
+h1 { margin: 0 0 12px; color: #facc15; }
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px;
+  background: #facc15;
+  color: #111827;
+  font-weight: 700;
+  cursor: pointer;
+}
