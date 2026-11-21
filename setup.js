@@ -118,6 +118,36 @@ if (exposeWithNgrok) {
     console.log("NGROK_AUTHTOKEN is missing. Add it to .env for unattended startup.");
   }
 
+  async function discoverNgrokUrl() {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let port = 4040; port <= 4050; port += 1) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/api/tunnels`);
+          if (!response.ok) continue;
+          const data = await response.json();
+          const publicUrl = data.tunnels
+            ?.filter(tunnelInfo =>
+              tunnelInfo.public_url?.startsWith("https://") &&
+              (tunnelInfo.config?.addr === "http://localhost:3001" ||
+                tunnelInfo.config?.addr?.endsWith(":3001"))
+            )
+            ?.map(tunnelInfo => tunnelInfo.public_url)[0];
+          if (publicUrl) return publicUrl;
+        } catch {}
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return null;
+  }
+
+  const existingPublicUrl = await discoverNgrokUrl();
+  if (existingPublicUrl) {
+    const wssUrl = `wss://${existingPublicUrl.replace(/^https?:\/\//, "")}`;
+    console.log(`\nTelebee public WSS URL: ${wssUrl}`);
+    console.log("Share this WSS URL with the extension client.");
+    process.exit(0);
+  }
+
   const ngrokArgs = ["http", String(process.env.PORT || 3001)];
   if (ngrokDomain) {
     const domain = ngrokDomain
@@ -145,21 +175,7 @@ if (exposeWithNgrok) {
 
   await new Promise(resolve => setTimeout(resolve, 1200));
 
-  let publicUrl = null;
-  for (let attempt = 0; attempt < 10 && !publicUrl; attempt += 1) {
-    for (const port of [4040, 4041, 4042, 4043]) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/tunnels`);
-        if (!response.ok) continue;
-        const data = await response.json();
-        publicUrl = data.tunnels
-          ?.map(tunnelInfo => tunnelInfo.public_url)
-          ?.find(url => url?.startsWith("https://"));
-        if (publicUrl) break;
-      } catch {}
-    }
-    if (!publicUrl) await new Promise(resolve => setTimeout(resolve, 500));
-  }
+  const publicUrl = await discoverNgrokUrl();
 
   if (publicUrl) {
     const wssUrl = `wss://${publicUrl.replace(/^https?:\/\//, "")}`;
