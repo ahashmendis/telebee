@@ -145,7 +145,7 @@ if (exposeWithNgrok) {
     const wssUrl = `wss://${existingPublicUrl.replace(/^https?:\/\//, "")}`;
     console.log(`\nTelebee public WSS URL: ${wssUrl}`);
     console.log("Share this WSS URL with the extension client.");
-    process.exit(0);
+    await new Promise(() => {});
   }
 
   const ngrokArgs = ["http", String(process.env.PORT || 3001)];
