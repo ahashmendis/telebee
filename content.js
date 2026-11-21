@@ -7,8 +7,9 @@ function findVideo() {
     const rect = video.getBoundingClientRect();
     return video.readyState >= 0 && rect.width > 1 && rect.height > 1;
   });
-  const video = videos.find(item => item.readyState >= 2) ||
-    videos.sort((a, b) => (b.duration || 0) - (a.duration || 0))[0] ||
+  const video = videos.find(item => item.readyState >= 2 && item.duration > 0) ||
+    videos.find(item => item.readyState >= 2) ||
+    videos.find(item => item.duration > 0) ||
     document.querySelector("video");
   if (video !== lastVideo) {
     lastVideo = video;
@@ -58,43 +59,70 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   const video = findVideo();
   if (!video) {
+    if (message.type === "SET_PLAYBACK") {
+      for (const frame of document.querySelectorAll("iframe")) {
+        frame.contentWindow?.postMessage({
+          type: "TELEBEE_SET_PLAYBACK",
+          payload: message
+        }, "*");
+      }
+    }
     sendResponse({ found: false });
     return;
   }
 
   if (message.type === "SET_PLAYBACK") {
     ignoreLocalUpdatesUntil = Date.now() + 2500;
+    let responseSent = false;
+    const respond = response => {
+      if (responseSent) return;
+      responseSent = true;
+      sendResponse(response);
+    };
     const apply = () => {
       if (typeof message.time === "number" && Number.isFinite(message.time)) {
         if (Math.abs(video.currentTime - message.time) > 0.75) {
           try {
-            video.currentTime = Math.max(0, message.time);
-          } catch {}
+            if (video.readyState >= 1) {
+              video.currentTime = Math.max(0, message.time);
+            } else {
+              video.addEventListener("loadedmetadata", () => {
+                video.currentTime = Math.max(0, message.time);
+              }, { once: true });
+            }
+          } catch (error) {
+            chrome.runtime.sendMessage({
+              type: "PLAYBACK_ERROR",
+              error: `Seek failed: ${error.message}`
+            }).catch(() => {});
+          }
         }
       }
       if (typeof message.rate === "number" && Number.isFinite(message.rate)) {
         video.playbackRate = message.rate;
       }
       if (message.action === "play" && video.paused) {
+        video.muted = false;
         const playPromise = video.play();
         if (playPromise?.catch) {
           playPromise.catch(error => {
             chrome.runtime.sendMessage({
               type: "PLAYBACK_ERROR",
-              error: error.message
+              error: `Could not start video source: ${error.message}`
             }).catch(() => {});
           });
         }
       }
       if (message.action === "pause" && !video.paused) video.pause();
-      sendResponse({ ok: true });
+      respond({ ok: true });
     };
 
-    if (video.readyState === 0) {
+    if (video.readyState === 0 || video.networkState === 3) {
       video.addEventListener("loadedmetadata", apply, { once: true });
+      video.addEventListener("loadeddata", apply, { once: true });
       setTimeout(() => {
-        if (video.readyState === 0) sendResponse({ found: true, waiting: true });
-      }, 1500);
+        if (!responseSent) respond({ found: true, waiting: true });
+      }, 3000);
     } else {
       apply();
     }
@@ -112,3 +140,30 @@ playbackObserver.observe(document.documentElement, {
 });
 
 playbackTimer = setInterval(broadcastPlayback, 2000);
+
+window.addEventListener("message", event => {
+  if (event.data?.type !== "TELEBEE_SET_PLAYBACK") return;
+  const message = event.data.payload;
+  const video = findVideo();
+  if (!video) return;
+
+  ignoreLocalUpdatesUntil = Date.now() + 2500;
+  if (typeof message.time === "number" && video.readyState >= 1) {
+    if (Math.abs(video.currentTime - message.time) > 0.75) {
+      video.currentTime = Math.max(0, message.time);
+    }
+  }
+  if (typeof message.rate === "number") video.playbackRate = message.rate;
+  if (message.action === "play" && video.paused) {
+    const playPromise = video.play();
+    if (playPromise?.catch) {
+      playPromise.catch(error => {
+        chrome.runtime.sendMessage({
+          type: "PLAYBACK_ERROR",
+          error: `Could not start video source: ${error.message}`
+        }).catch(() => {});
+      });
+    }
+  }
+  if (message.action === "pause" && !video.paused) video.pause();
+});
