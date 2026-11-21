@@ -12,25 +12,29 @@
         <button id="micBtn" type="button" aria-pressed="false" title="Allow microphone access and mute or unmute">Mic: off</button>
         <button id="cameraBtn" type="button" aria-pressed="false" title="Allow camera access and turn it on or off">Camera: off</button>
         <button id="chatToggle" type="button" aria-pressed="true" title="Hide chat and system messages">Chat: on</button>
+        <button id="settingsToggle" type="button" aria-expanded="false" title="Open settings">Settings</button>
       </div>
     </header>
-
-    <section class="devices">
-      <label>Microphone
-        <select id="micSelect"><option value="">Default microphone</option></select>
-      </label>
-      <label>Camera
-        <select id="cameraSelect"><option value="">Default camera</option></select>
-      </label>
-    </section>
 
     <section class="room">
       <input id="roomCode" maxlength="12" placeholder="ROOM CODE" autocomplete="off">
       <button id="joinBtn">Join</button>
     </section>
 
-    <section class="server">
-      <input id="serverUrl" placeholder="wss://your-server.example">
+    <section id="settingsPanel" class="settings" hidden>
+      <div class="devices">
+        <label>Microphone
+          <select id="micSelect"><option value="">Default microphone</option></select>
+        </label>
+        <label>Camera
+          <select id="cameraSelect"><option value="">Default camera</option></select>
+        </label>
+      </div>
+      <div class="server">
+        <label>Server URL
+          <input id="serverUrl" placeholder="wss://your-server.example">
+        </label>
+      </div>
     </section>
 
     <div id="status" class="status">Not connected</div>

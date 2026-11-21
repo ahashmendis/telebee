@@ -388,13 +388,11 @@ document.querySelector("#chatToggle").addEventListener("click", event => {
   event.target.textContent = hidden ? "Chat: off" : "Chat: on";
   event.target.setAttribute("aria-pressed", String(!hidden));
 });
-
-navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
-document.querySelector("#micSelect").addEventListener("change", event => {
-  if (event.target.value) void replaceMediaTrack("audio", event.target.value);
-});
-document.querySelector("#cameraSelect").addEventListener("change", event => {
-  if (event.target.value) void replaceMediaTrack("video", event.target.value);
+document.querySelector("#settingsToggle").addEventListener("click", event => {
+  const panel = document.querySelector("#settingsPanel");
+  panel.hidden = !panel.hidden;
+  event.target.setAttribute("aria-expanded", String(!panel.hidden));
+  event.target.textContent = panel.hidden ? "Settings" : "Settings: open";
 });
 
 navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
