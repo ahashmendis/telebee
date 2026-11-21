@@ -120,7 +120,17 @@ if (exposeWithNgrok) {
 
   const ngrokArgs = ["http", String(process.env.PORT || 3001)];
   if (ngrokDomain) {
-    ngrokArgs.push("--url", ngrokDomain.replace(/^https?:\/\//, "").replace(/^wss?:\/\//, ""));
+    const domain = ngrokDomain
+      .replace(/^https?:\/\//, "")
+      .replace(/^wss?:\/\//, "")
+      .replace(/\/$/, "");
+    const looksReserved = domain && !domain.includes(".ngrok-");
+    if (!looksReserved) {
+      console.log("Custom ngrok domains require a paid ngrok plan.");
+      console.log("Starting without a custom domain instead.");
+    } else {
+      ngrokArgs.push("--url", domain);
+    }
   }
 
   console.log("Starting ngrok tunnel...");
@@ -151,5 +161,7 @@ if (exposeWithNgrok) {
     console.log("ngrok started. Copy the HTTPS forwarding URL and use it with wss://");
   }
 
-  await new Promise(() => {});
+  const exitCode = await new Promise(resolve => tunnel.once("exit", resolve));
+  if (server) server.kill();
+  process.exit(exitCode || 0);
 }

@@ -42,7 +42,8 @@ npm start -- --ngrok
 
 The script prints the public `wss://` URL to enter in the client extension.
 
-To use the ngrok reserved domain:
+Free ngrok accounts should leave `TELEBEE_NGROK_URL` blank. A paid reserved
+domain can optionally be configured:
 
 ```bash
 npm start -- --ngrok --ngrok-url=telebee.ngrok-free.dev
