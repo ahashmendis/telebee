@@ -145,19 +145,27 @@ if (exposeWithNgrok) {
 
   await new Promise(resolve => setTimeout(resolve, 1200));
 
-  try {
-    const response = await fetch("http://127.0.0.1:4040/api/tunnels");
-    if (response.ok) {
-      const data = await response.json();
-      const publicUrl = data.tunnels
-        ?.map(tunnelInfo => tunnelInfo.public_url)
-        ?.find(url => url?.startsWith("https://"));
-      if (publicUrl) {
-        console.log(`\nTelebee public WebSocket URL: wss://${publicUrl.replace(/^https?:\/\//, "")}`);
-        console.log("Share this WSS URL with the extension client.");
-      }
+  let publicUrl = null;
+  for (let attempt = 0; attempt < 10 && !publicUrl; attempt += 1) {
+    for (const port of [4040, 4041, 4042, 4043]) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/tunnels`);
+        if (!response.ok) continue;
+        const data = await response.json();
+        publicUrl = data.tunnels
+          ?.map(tunnelInfo => tunnelInfo.public_url)
+          ?.find(url => url?.startsWith("https://"));
+        if (publicUrl) break;
+      } catch {}
     }
-  } catch {
+    if (!publicUrl) await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
+  if (publicUrl) {
+    const wssUrl = `wss://${publicUrl.replace(/^https?:\/\//, "")}`;
+    console.log(`\nTelebee public WSS URL: ${wssUrl}`);
+    console.log("Share this WSS URL with the extension client.");
+  } else {
     console.log("ngrok started. Copy the HTTPS forwarding URL and use it with wss://");
   }
 
