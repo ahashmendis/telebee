@@ -12,7 +12,11 @@ function commandExists(command) {
 }
 
 function run(command, args) {
-  const result = spawnSync(command, args, { stdio: "inherit" });
+  // On Windows npm is npm.cmd, which cannot be spawned without a shell.
+  const result = spawnSync(command, args, {
+    stdio: "inherit",
+    shell: process.platform === "win32"
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -118,6 +122,8 @@ if (exposeWithNgrok) {
     console.log("NGROK_AUTHTOKEN is missing. Add it to .env for unattended startup.");
   }
 
+  const localPort = String(process.env.PORT || 3001);
+
   async function discoverNgrokUrl() {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       for (let port = 4040; port <= 4050; port += 1) {
@@ -128,8 +134,7 @@ if (exposeWithNgrok) {
           const publicUrl = data.tunnels
             ?.filter(tunnelInfo =>
               tunnelInfo.public_url?.startsWith("https://") &&
-              (tunnelInfo.config?.addr === "http://localhost:3001" ||
-                tunnelInfo.config?.addr?.endsWith(":3001"))
+              tunnelInfo.config?.addr?.endsWith(`:${localPort}`)
             )
             ?.map(tunnelInfo => tunnelInfo.public_url)[0];
           if (publicUrl) return publicUrl;
@@ -149,7 +154,7 @@ if (exposeWithNgrok) {
     process.on("SIGTERM", () => process.exit(0));
     setInterval(() => {}, 60_000);
   } else {
-    const ngrokArgs = ["http", String(process.env.PORT || 3001)];
+    const ngrokArgs = ["http", localPort];
   if (ngrokDomain) {
     const domain = ngrokDomain
       .replace(/^https?:\/\//, "")
