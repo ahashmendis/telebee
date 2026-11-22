@@ -1,194 +1,299 @@
-let serverUrl = localStorage.getItem("telebeeServerUrl") || "ws://127.0.0.1:3001";
+import { createCall } from "./call.js";
+import { createSync } from "./sync.js";
+
+const $ = selector => document.querySelector(selector);
+
 const peerId = crypto.randomUUID();
-const peerConnections = new Map();
+const DEFAULT_SERVER = "ws://127.0.0.1:3001";
+
+let serverUrl = safeGet("telebeeServerUrl") || DEFAULT_SERVER;
+let displayName = safeGet("telebeeName") || "";
 let socket = null;
-let localStream = null;
 let roomCode = "";
-let applyingPlayback = false;
-let lastSharedUrl = "";
-let playbackApplyTimer = null;
-let lastAppliedPlayback = null;
+let hostId = null;
+let partner = null; // { id, name, mic, camera }
+let callState = "idle";
+let manualClose = false;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+let unread = 0;
+let localStream = null;
 let micDeviceId = "";
 let cameraDeviceId = "";
 
-const roomInput = document.querySelector("#roomCode");
-const serverInput = document.querySelector("#serverUrl");
-const statusEl = document.querySelector("#status");
-const messagesEl = document.querySelector("#messages");
-const videosEl = document.querySelector("#videos");
+const els = {
+  roomInput: $("#roomCode"),
+  nameInput: $("#displayName"),
+  serverInput: $("#serverUrl"),
+  status: $("#status"),
+  conn: $("#conn"),
+  messages: $("#messages"),
+  remoteVideo: $("#remoteVideo"),
+  localVideo: $("#localVideo"),
+  micBtn: $("#micBtn"),
+  cameraBtn: $("#cameraBtn"),
+  chatToggle: $("#chatToggle")
+};
+
+function safeGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function safeSet(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
 
 function randomRoom() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
+  return Math.random().toString(36).slice(2, 8).toUpperCase().padEnd(6, "X");
 }
 
-if (!roomInput.value) roomInput.value = randomRoom();
-serverInput.value = serverUrl;
-
-async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+function send(message) {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(message));
+  return true;
 }
 
-async function openOrSyncUrl(url) {
-  if (!url) return;
-  const tab = await getActiveTab();
-  if (!tab?.id) return;
-  if (tab.url !== url) {
-    await chrome.tabs.update(tab.id, { url });
-    await new Promise(resolve => setTimeout(resolve, 2500));
+const isHost = () => hostId === peerId;
+
+const call = createCall({
+  send,
+  onRemoteStream: stream => {
+    els.remoteVideo.srcObject = stream;
+    if (stream) els.remoteVideo.play().catch(() => {});
+    renderStage();
+  },
+  onState: state => {
+    callState = state;
+    renderStatus();
+    renderStage();
   }
-  lastSharedUrl = url;
+});
+
+const sync = createSync({
+  send,
+  isHost,
+  onStatus: renderSyncStatus
+});
+
+/* ---------- Rendering ---------- */
+
+function setView(view) {
+  document.body.dataset.view = view;
+  $("#joinView").hidden = view !== "join";
+  $("#roomView").hidden = view !== "room";
 }
 
-async function getPlayback() {
-  const tab = await getActiveTab();
-  if (!tab?.id) return { found: false };
-  try {
-    return await chrome.tabs.sendMessage(tab.id, { type: "GET_PLAYBACK" });
-  } catch {
-    return { found: false };
+function setConn(state, text) {
+  els.conn.dataset.state = state;
+  els.status.textContent = text;
+}
+
+function renderStatus() {
+  if (!socket || manualClose) return setConn("idle", "Not connected");
+  if (socket.readyState !== WebSocket.OPEN) return setConn("connecting", "Connecting…");
+  if (!partner) return setConn("ok", "Waiting for partner");
+  if (callState === "connected") return setConn("ok", `With ${partner.name}`);
+  if (callState === "failed") return setConn("error", "Call failed, retrying…");
+  return setConn("connecting", "Connecting call…");
+}
+
+function renderRole() {
+  const badge = $("#roleBadge");
+  badge.hidden = !partner && !isHost();
+  badge.textContent = isHost() ? "Host" : "Following";
+  badge.title = isHost()
+    ? "Your play, pause and seek keep the room in sync"
+    : "You follow your partner's playback";
+}
+
+function renderStage() {
+  const hasVideo = Boolean(els.remoteVideo.srcObject?.getVideoTracks().length);
+  const showVideo = Boolean(partner) && hasVideo && callState === "connected" && partner.camera !== false;
+  els.remoteVideo.style.visibility = showVideo ? "visible" : "hidden";
+  $("#remoteEmpty").hidden = showVideo;
+  $("#remoteName").hidden = !partner;
+  $("#remoteName").textContent = partner?.name || "";
+  $("#remoteMuted").hidden = !(partner && partner.mic === false);
+  $("#remoteAvatar").textContent = (partner?.name || "?").charAt(0).toUpperCase();
+
+  let text = `Waiting for someone to join…\nShare code ${roomCode}`;
+  if (partner) {
+    if (callState === "connected") text = `${partner.name}'s camera is off`;
+    else if (callState === "failed") text = "Connection failed. Retrying…";
+    else text = `Connecting to ${partner.name}…`;
   }
+  const remoteText = $("#remoteText");
+  remoteText.textContent = text;
+  remoteText.style.whiteSpace = "pre-line";
 }
 
-async function setPlayback(state) {
-  const tab = await getActiveTab();
-  if (!tab?.id) return;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      await chrome.tabs.sendMessage(tab.id, { type: "SET_PLAYBACK", ...state });
-      return;
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
+function formatTime(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = value => String(value).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-async function applyRemotePlayback(playback) {
-  if (!playback) return;
-  if (lastAppliedPlayback &&
-      lastAppliedPlayback.paused === playback.paused &&
-      lastAppliedPlayback.rate === playback.rate &&
-      Math.abs(lastAppliedPlayback.time - playback.time) < (playback.paused ? 1 : 2.5)) {
+function renderSyncStatus(state) {
+  const line = $(".syncline");
+  if (!state?.found) {
+    $("#syncText").textContent = "No video detected on this page";
+    line.classList.remove("active");
     return;
   }
-  lastAppliedPlayback = {
-    paused: playback.paused,
-    time: playback.time,
-    rate: playback.rate
-  };
-  applyingPlayback = true;
-  await setPlayback({
-    action: playback.paused ? "pause" : "play",
-    time: playback.time,
-    rate: playback.rate
-  });
-  playbackApplyTimer = setTimeout(() => {
-    applyingPlayback = false;
-  }, 1000);
+  $("#syncText").textContent = `${state.paused ? "Paused" : "Playing"} · ${formatTime(state.time)}`;
+  line.classList.toggle("active", Boolean(partner));
 }
 
-function addMessage(text, author = "System") {
+function addSystem(text) {
   const item = document.createElement("div");
-  item.className = "message";
-  const label = document.createElement("strong");
-  label.textContent = `${author}: `;
-  item.append(label, document.createTextNode(text));
-  messagesEl.append(item);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  item.className = "msg system";
+  item.textContent = text;
+  els.messages.append(item);
+  els.messages.scrollTop = els.messages.scrollHeight;
 }
 
-function addVideo(id, stream) {
-  let tile = document.querySelector(`[data-peer="${CSS.escape(id)}"]`);
-  if (!tile) {
-    tile = document.createElement("div");
-    tile.className = "videoTile";
-    tile.dataset.peer = id;
-    tile.innerHTML = "<video autoplay playsinline></video><span></span>";
-    videosEl.append(tile);
+function addChat(name, text, ts, mine) {
+  const item = document.createElement("div");
+  item.className = mine ? "msg mine" : "msg";
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const time = new Date(ts || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  meta.textContent = mine ? time : `${name} · ${time}`;
+  item.append(meta, document.createTextNode(text));
+  els.messages.append(item);
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function setUnread(count) {
+  unread = count;
+  const badge = $("#unread");
+  badge.hidden = count === 0;
+  badge.textContent = count > 9 ? "9+" : String(count);
+}
+
+function showJoinError(text) {
+  const error = $("#joinError");
+  error.textContent = text;
+  error.hidden = !text;
+}
+
+/* ---------- Camera and microphone ---------- */
+
+function updateMediaButtons() {
+  const mic = localStream?.getAudioTracks()[0];
+  const camera = localStream?.getVideoTracks()[0];
+  for (const [button, track] of [[els.micBtn, mic], [els.cameraBtn, camera]]) {
+    const on = Boolean(track?.enabled);
+    button.setAttribute("aria-pressed", String(on));
+    button.classList.toggle("muted-off", Boolean(track) && !on);
+    button.classList.remove("denied");
   }
-  const video = tile.querySelector("video");
-  video.srcObject = stream;
-  video.muted = id === peerId;
-  tile.querySelector("span").textContent = id === peerId ? "You" : "Guest";
+  const cameraOn = Boolean(camera?.enabled);
+  $("#self").classList.toggle("live", cameraOn);
+}
+
+function sendMediaState() {
+  if (!partner) return;
+  send({
+    type: "media-state",
+    mic: Boolean(localStream?.getAudioTracks()[0]?.enabled),
+    camera: Boolean(localStream?.getVideoTracks()[0]?.enabled)
+  });
+}
+
+function publishLocalTracks() {
+  call.setLocalTrack("audio", localStream?.getAudioTracks()[0] || null);
+  call.setLocalTrack("video", localStream?.getVideoTracks()[0] || null);
 }
 
 async function enableMedia() {
-  if (localStream) return;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 360 } },
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
-    addVideo(peerId, localStream);
-    for (const pc of peerConnections.values()) {
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-    }
-    updateMediaButtons();
-    await refreshDevices();
-  } catch (error) {
-    const message = error.name === "NotAllowedError"
-      ? "Camera and microphone permission was denied."
-      : error.message;
-    addMessage(message, "Media");
-    document.querySelector("#micBtn").classList.add("denied");
-    document.querySelector("#cameraBtn").classList.add("denied");
-  }
-}
-
-async function ensureMedia() {
+  if (localStream) return true;
   if (!navigator.mediaDevices?.getUserMedia) {
-    addMessage("Camera and microphone are not supported in this browser context.", "Media");
+    addSystem("Camera and microphone are not available in this browser context.");
     return false;
   }
-  if (!localStream) await enableMedia();
-  return Boolean(localStream);
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+  } catch (error) {
+    // Fall back to audio only if the camera is missing or busy.
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      addSystem("Camera unavailable. Joined with microphone only.");
+    } catch {
+      const denied = error.name === "NotAllowedError";
+      addSystem(denied
+        ? "Camera and microphone permission was denied. You can still watch and chat."
+        : error.message);
+      for (const button of [els.micBtn, els.cameraBtn]) button.classList.add("denied");
+      return false;
+    }
+  }
+  els.localVideo.srcObject = localStream;
+  publishLocalTracks();
+  updateMediaButtons();
+  sendMediaState();
+  await refreshDevices();
+  return true;
+}
+
+function stopMedia() {
+  localStream?.getTracks().forEach(track => track.stop());
+  localStream = null;
+  els.localVideo.srcObject = null;
+  updateMediaButtons();
+}
+
+async function toggleTrack(kind) {
+  if (!localStream) {
+    await enableMedia();
+    return;
+  }
+  const track = kind === "audio"
+    ? localStream.getAudioTracks()[0]
+    : localStream.getVideoTracks()[0];
+  if (!track) {
+    await replaceMediaTrack(kind, "");
+    return;
+  }
+  track.enabled = !track.enabled;
+  updateMediaButtons();
+  sendMediaState();
 }
 
 async function refreshDevices() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
   const devices = await navigator.mediaDevices.enumerateDevices();
-  const micSelect = document.querySelector("#micSelect");
-  const cameraSelect = document.querySelector("#cameraSelect");
-
-  micSelect.innerHTML = "";
-  cameraSelect.innerHTML = "";
-
-  for (const device of devices.filter(item => item.kind === "audioinput")) {
-    micSelect.add(new Option(device.label || "Microphone", device.deviceId));
-  }
-  for (const device of devices.filter(item => item.kind === "videoinput")) {
-    cameraSelect.add(new Option(device.label || "Camera", device.deviceId));
-  }
-
-  if (!micSelect.options.length) micSelect.add(new Option("No microphone found", ""));
-  if (!cameraSelect.options.length) cameraSelect.add(new Option("No camera found", ""));
-  if (micDeviceId) micSelect.value = micDeviceId;
-  if (cameraDeviceId) cameraSelect.value = cameraDeviceId;
+  const fill = (select, kind, fallbackLabel, emptyLabel, selected) => {
+    select.innerHTML = "";
+    for (const device of devices.filter(item => item.kind === kind)) {
+      select.add(new Option(device.label || fallbackLabel, device.deviceId));
+    }
+    if (!select.options.length) select.add(new Option(emptyLabel, ""));
+    const active = localStream?.getTracks().find(t => t.kind === (kind === "audioinput" ? "audio" : "video"));
+    const activeId = active?.getSettings().deviceId;
+    select.value = selected || activeId || select.options[0].value;
+  };
+  fill($("#micSelect"), "audioinput", "Microphone", "No microphone found", micDeviceId);
+  fill($("#cameraSelect"), "videoinput", "Camera", "No camera found", cameraDeviceId);
 }
 
 async function replaceMediaTrack(kind, deviceId) {
-  if (!await ensureMedia()) return;
+  const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
   const constraints = kind === "audio"
     ? {
         audio: {
-          deviceId: { exact: deviceId },
+          ...(deviceId && { deviceId: { exact: deviceId } }),
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
-        },
-        video: false
-      }
-    : {
-        audio: false,
-        video: {
-          deviceId: { exact: deviceId },
-          width: { ideal: 640 },
-          height: { ideal: 360 }
         }
-      };
+      }
+    : { video: { ...base, ...(deviceId && { deviceId: { exact: deviceId } }) } };
 
   try {
     const replacement = await navigator.mediaDevices.getUserMedia(constraints);
@@ -197,274 +302,282 @@ async function replaceMediaTrack(kind, deviceId) {
       : replacement.getVideoTracks()[0];
     if (!newTrack) return;
 
+    if (!localStream) localStream = new MediaStream();
     const oldTrack = kind === "audio"
       ? localStream.getAudioTracks()[0]
       : localStream.getVideoTracks()[0];
-
     if (oldTrack) {
+      newTrack.enabled = oldTrack.enabled;
       oldTrack.stop();
       localStream.removeTrack(oldTrack);
     }
     localStream.addTrack(newTrack);
-
-    for (const pc of peerConnections.values()) {
-      const sender = pc.getSenders().find(item => item.track?.kind === kind);
-      if (sender) await sender.replaceTrack(newTrack);
-      else pc.addTrack(newTrack, localStream);
-    }
+    els.localVideo.srcObject = localStream;
+    call.setLocalTrack(kind, newTrack);
 
     if (kind === "audio") micDeviceId = deviceId;
     else cameraDeviceId = deviceId;
-
-    addVideo(peerId, localStream);
     updateMediaButtons();
+    sendMediaState();
     await refreshDevices();
-    addMessage(`${kind === "audio" ? "Microphone" : "Camera"} changed`, "Media");
   } catch (error) {
-    addMessage(error.message, "Media");
+    addSystem(`Could not switch ${kind === "audio" ? "microphone" : "camera"}: ${error.message}`);
   }
 }
 
-function updateMediaButtons() {
-  const mic = localStream?.getAudioTracks()[0];
-  const camera = localStream?.getVideoTracks()[0];
-  const micBtn = document.querySelector("#micBtn");
-  const cameraBtn = document.querySelector("#cameraBtn");
-
-  micBtn.textContent = mic?.enabled ? "Mic: on" : "Mic: off";
-  micBtn.setAttribute("aria-pressed", String(Boolean(mic?.enabled)));
-  micBtn.classList.toggle("active", Boolean(mic?.enabled));
-  micBtn.classList.remove("denied");
-
-  cameraBtn.textContent = camera?.enabled ? "Camera: on" : "Camera: off";
-  cameraBtn.setAttribute("aria-pressed", String(Boolean(camera?.enabled)));
-  cameraBtn.classList.toggle("active", Boolean(camera?.enabled));
-  cameraBtn.classList.remove("denied");
-}
-
-async function toggleTrack(kind) {
-  if (!await ensureMedia()) return;
-  const track = kind === "audio"
-    ? localStream.getAudioTracks()[0]
-    : localStream.getVideoTracks()[0];
-  if (!track) return;
-  track.enabled = !track.enabled;
-  updateMediaButtons();
-  addMessage(
-    `${kind === "audio" ? "Microphone" : "Camera"} ${track.enabled ? "on" : "off"}`,
-    "Media"
-  );
-}
-
-function createPeer(remoteId) {
-  if (peerConnections.has(remoteId)) return peerConnections.get(remoteId);
-
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-  });
-  peerConnections.set(remoteId, pc);
-
-  pc.onicecandidate = ({ candidate }) => {
-    if (candidate) socket.send(JSON.stringify({
-      type: "signal", to: remoteId, signal: { candidate: candidate.toJSON() }
-    }));
-  };
-
-  pc.ontrack = ({ streams }) => addVideo(remoteId, streams[0]);
-  if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-  pc.onconnectionstatechange = () => {
-    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-      peerConnections.delete(remoteId);
-      document.querySelector(`[data-peer="${CSS.escape(remoteId)}"]`)?.remove();
-    }
-  };
-  return pc;
-}
-
-async function createOffer(remoteId) {
-  const pc = createPeer(remoteId);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  socket.send(JSON.stringify({
-    type: "signal", to: remoteId, signal: { description: pc.localDescription }
-  }));
-}
-
-async function handleSignal(message) {
-  const pc = createPeer(message.from);
-  const signal = message.signal;
-
-  if (signal.description) {
-    await pc.setRemoteDescription(signal.description);
-    if (signal.description.type === "offer") {
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.send(JSON.stringify({
-        type: "signal", to: message.from, signal: { description: pc.localDescription }
-      }));
-    }
-  } else if (signal.candidate) {
-    try { await pc.addIceCandidate(signal.candidate); } catch {}
-  }
-}
+/* ---------- Room connection ---------- */
 
 function connectRoom() {
-  roomCode = roomInput.value.trim().toUpperCase();
-  if (!roomCode) return;
-  serverUrl = serverInput.value.trim().replace(/\/$/, "");
-  if (!/^wss?:\/\//i.test(serverUrl)) {
-    statusEl.textContent = "Server URL must start with ws:// or wss://";
+  roomCode = els.roomInput.value.trim().toUpperCase();
+  if (!roomCode) return showJoinError("Enter a room code or press New.");
+
+  const url = els.serverInput.value.trim().replace(/\/$/, "");
+  if (!/^wss?:\/\//i.test(url)) {
+    showJoinError("Server URL must start with ws:// or wss:// (see Settings).");
     return;
   }
-  localStorage.setItem("telebeeServerUrl", serverUrl);
+  serverUrl = url;
+  displayName = els.nameInput.value.trim();
+  safeSet("telebeeServerUrl", serverUrl);
+  safeSet("telebeeName", displayName);
+  showJoinError("");
 
-  if (socket) socket.close();
-  socket = new WebSocket(serverUrl);
-  statusEl.textContent = "Connecting...";
+  manualClose = false;
+  openSocket();
+}
 
-  socket.onopen = async () => {
-    const tab = await getActiveTab();
-    socket.send(JSON.stringify({
+function openSocket() {
+  clearTimeout(reconnectTimer);
+  if (socket) {
+    const old = socket;
+    socket = null;
+    old.close();
+  }
+  const ws = new WebSocket(serverUrl);
+  socket = ws;
+  setConn("connecting", "Connecting…");
+
+  ws.onopen = async () => {
+    if (ws !== socket) return;
+    reconnectDelay = 1000;
+    const [tab, playback] = await Promise.all([sync.getActiveTab(), sync.getPlayback()]);
+    send({
       type: "join",
       room: roomCode,
       peerId,
-      url: tab?.url || ""
-    }));
+      name: displayName || "Guest",
+      url: tab?.url && /^https?:/i.test(tab.url) ? tab.url : "",
+      playback: playback.found ? { ...playback, kind: "event" } : null
+    });
   };
 
-  socket.onmessage = async (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "room-joined") {
-      statusEl.textContent = `In room ${roomCode}`;
-      addMessage(`Joined room ${roomCode}`);
-      void ensureMedia();
-      for (const remoteId of message.peers) await createOffer(remoteId);
-      if (message.state?.url) {
-        await openOrSyncUrl(message.state.url);
-        await new Promise(resolve => setTimeout(resolve, 1200));
-      }
-      if (message.state?.playback) {
-        await applyRemotePlayback(message.state.playback);
-      }
-      const playback = await getPlayback();
-      if (playback.found && !message.state?.playback) {
-        socket.send(JSON.stringify({ type: "playback", state: playback }));
-      }
-    } else if (message.type === "peer-joined") {
-      addMessage("Someone joined");
-    } else if (message.type === "room-state" || message.type === "navigate") {
-      const state = message.state || message;
-      if (state.url) {
-        await openOrSyncUrl(state.url);
-        await new Promise(resolve => setTimeout(resolve, 1200));
-      }
-      if (state.playback) {
-        await applyRemotePlayback(state.playback);
-      }
-    } else if (message.type === "peer-left") {
-      peerConnections.get(message.peerId)?.close();
-      peerConnections.delete(message.peerId);
-      document.querySelector(`[data-peer="${CSS.escape(message.peerId)}"]`)?.remove();
-    } else if (message.type === "signal") {
-      await handleSignal(message);
-    } else if (message.type === "chat") {
-      addMessage(message.text, "Guest");
-    } else if (message.type === "playback") {
-      await applyRemotePlayback(message.state);
-    }
+  ws.onmessage = async event => {
+    if (ws !== socket) return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    try { await handleMessage(message); } catch (error) { console.error(error); }
   };
 
-  socket.onclose = () => {
-    statusEl.textContent = "Disconnected";
+  ws.onclose = () => {
+    if (ws !== socket) return;
+    callState = "idle";
+    if (manualClose) return;
+    setConn("connecting", "Reconnecting…");
+    reconnectTimer = setTimeout(openSocket, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
   };
-  socket.onerror = () => {
-    statusEl.textContent = "Server unavailable";
+
+  ws.onerror = () => {
+    if (ws !== socket) return;
+    if (!$("#joinView").hidden) showJoinError("Could not reach the server. Check the Server URL in Settings.");
   };
 }
 
-document.querySelector("#joinBtn").addEventListener("click", connectRoom);
-document.querySelector("#micBtn").addEventListener("click", () => toggleTrack("audio"));
-document.querySelector("#cameraBtn").addEventListener("click", () => toggleTrack("video"));
-document.querySelector("#micSelect").addEventListener("change", event => {
+async function handleMessage(message) {
+  switch (message.type) {
+    case "room-joined": {
+      hostId = message.hostId;
+      partner = message.peers[0]
+        ? { ...message.peers[0], mic: true, camera: true }
+        : null;
+      call.setIceServers(message.iceServers);
+      $("#roomLabel").textContent = roomCode;
+      setView("room");
+      renderRole();
+      renderStatus();
+      renderStage();
+      sync.start();
+      addSystem(partner ? `Joined room ${roomCode} with ${partner.name}` : `Joined room ${roomCode}`);
+      void enableMedia();
+      if (partner) {
+        call.start(partner.id, { initiator: false });
+        sendMediaState();
+        await sync.applyRoomState(message.state);
+      }
+      break;
+    }
+    case "peer-joined": {
+      partner = { id: message.peerId, name: message.name, mic: true, camera: true };
+      callState = "connecting";
+      addSystem(`${partner.name} joined`);
+      call.start(partner.id, { initiator: true });
+      sendMediaState();
+      renderRole();
+      renderStatus();
+      renderStage();
+      break;
+    }
+    case "peer-left": {
+      if (partner?.id !== message.peerId) break;
+      addSystem(`${partner.name} left`);
+      partner = null;
+      hostId = message.hostId;
+      callState = "idle";
+      call.stop();
+      renderRole();
+      renderStatus();
+      renderStage();
+      break;
+    }
+    case "host-changed":
+      hostId = message.hostId;
+      renderRole();
+      break;
+    case "signal":
+      await call.handleSignal(message.from, message.signal);
+      break;
+    case "chat":
+      addChat(message.name || partner?.name || "Guest", message.text, message.ts, false);
+      if (document.body.classList.contains("chat-hidden")) setUnread(unread + 1);
+      break;
+    case "playback":
+      await sync.applyRemote(message.state, message.state?.kind);
+      break;
+    case "navigate":
+      await sync.openUrl(message.url);
+      break;
+    case "media-state":
+      if (partner?.id === message.from) {
+        partner.mic = message.mic;
+        partner.camera = message.camera;
+        renderStage();
+      }
+      break;
+    case "room-full":
+      manualClose = true;
+      socket?.close();
+      showJoinError("That room already has two people.");
+      setConn("error", "Room full");
+      break;
+    default:
+      break;
+  }
+}
+
+function leaveRoom() {
+  manualClose = true;
+  clearTimeout(reconnectTimer);
+  const ws = socket;
+  socket = null;
+  ws?.close();
+  call.stop();
+  sync.stop();
+  stopMedia();
+  partner = null;
+  hostId = null;
+  callState = "idle";
+  els.messages.innerHTML = "";
+  setUnread(0);
+  document.body.classList.remove("chat-hidden");
+  els.chatToggle.setAttribute("aria-pressed", "true");
+  setView("join");
+  setConn("idle", "Not connected");
+}
+
+/* ---------- Wiring ---------- */
+
+els.roomInput.value = randomRoom();
+els.nameInput.value = displayName;
+els.serverInput.value = serverUrl;
+
+$("#joinBtn").addEventListener("click", connectRoom);
+$("#genBtn").addEventListener("click", () => { els.roomInput.value = randomRoom(); });
+$("#leaveBtn").addEventListener("click", leaveRoom);
+els.micBtn.addEventListener("click", () => toggleTrack("audio"));
+els.cameraBtn.addEventListener("click", () => toggleTrack("video"));
+$("#micSelect").addEventListener("change", event => {
   if (event.target.value) void replaceMediaTrack("audio", event.target.value);
 });
-document.querySelector("#cameraSelect").addEventListener("change", event => {
+$("#cameraSelect").addEventListener("change", event => {
   if (event.target.value) void replaceMediaTrack("video", event.target.value);
 });
-document.querySelector("#chatToggle").addEventListener("click", event => {
+
+els.chatToggle.addEventListener("click", () => {
   const hidden = document.body.classList.toggle("chat-hidden");
-  event.target.textContent = hidden ? "Chat: off" : "Chat: on";
-  event.target.setAttribute("aria-pressed", String(!hidden));
-});
-document.querySelector("#settingsToggle").addEventListener("click", event => {
-  const panel = document.querySelector("#settingsPanel");
-  panel.hidden = !panel.hidden;
-  event.target.setAttribute("aria-expanded", String(!panel.hidden));
-  event.target.textContent = panel.hidden ? "Settings" : "Settings: open";
-});
-
-navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
-
-roomInput.addEventListener("input", () => {
-  roomInput.value = roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (roomInput.value.length >= 6 && (!socket || socket.readyState === WebSocket.CLOSED)) {
-    connectRoom();
+  els.chatToggle.setAttribute("aria-pressed", String(!hidden));
+  if (!hidden) {
+    setUnread(0);
+    els.messages.scrollTop = els.messages.scrollHeight;
+    $("#chatInput").focus();
   }
 });
 
-roomInput.addEventListener("keydown", (event) => {
+$("#settingsToggle").addEventListener("click", event => {
+  const panel = $("#settingsPanel");
+  panel.hidden = !panel.hidden;
+  event.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) void refreshDevices();
+});
+
+$("#copyBtn").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  try {
+    await navigator.clipboard.writeText(roomCode);
+    button.textContent = "Copied!";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => { button.textContent = "Copy code"; }, 1500);
+});
+
+$("#syncBtn").addEventListener("click", async () => {
+  hostId = peerId;
+  send({ type: "take-control" });
+  renderRole();
+  const state = await sync.pushNow();
+  renderSyncStatus(state);
+});
+
+els.roomInput.addEventListener("input", event => {
+  els.roomInput.value = els.roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (event.inputType === "insertFromPaste" && els.roomInput.value.length === 6) connectRoom();
+});
+els.roomInput.addEventListener("keydown", event => {
+  if (event.key === "Enter") connectRoom();
+});
+els.nameInput.addEventListener("keydown", event => {
   if (event.key === "Enter") connectRoom();
 });
 
-document.querySelector("#chatForm").addEventListener("submit", (event) => {
+$("#chatForm").addEventListener("submit", event => {
   event.preventDefault();
-  const input = document.querySelector("#chatInput");
+  const input = $("#chatInput");
   const text = input.value.trim();
   if (!text) return;
-  addMessage(text, "You");
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "chat", text }));
-  }
-  input.value = "";
-});
-
-document.querySelector("#syncBtn").addEventListener("click", async () => {
-  const state = await getPlayback();
-  const tab = await getActiveTab();
-  if (tab?.url) {
-    lastSharedUrl = tab.url;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "navigate", url: tab.url }));
-    }
-  }
-  if (!state.found) {
-    document.querySelector("#syncText").textContent = "No video detected";
-    return;
-  }
-  document.querySelector("#syncText").textContent = `${state.paused ? "Paused" : "Playing"} at ${Math.round(state.time)}s`;
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "playback", state }));
+  if (send({ type: "chat", text })) {
+    addChat(displayName || "You", text, Date.now(), true);
+    input.value = "";
+  } else {
+    addSystem("Not connected. Message not sent.");
   }
 });
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === "PLAYBACK_ERROR") {
-    addMessage(`Playback error: ${message.error}`, "Media");
-  }
-  if (message.type === "PLAYBACK_STATE") {
-    if (applyingPlayback || !socket) return;
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "playback", state: message.state }));
-    }
-  }
+chrome.runtime.onMessage.addListener(message => {
+  if (message.type === "PLAYBACK_ERROR") addSystem(`Playback: ${message.error}`);
+  if (message.type === "PLAYBACK_STATE") sync.handleLocalPlayback(message.state);
 });
 
-setInterval(async () => {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  const tab = await getActiveTab();
-  if (!tab?.url || tab.url === lastSharedUrl) return;
-  if (!tab.url.startsWith("http://") && !tab.url.startsWith("https://")) return;
-  lastSharedUrl = tab.url;
-  socket.send(JSON.stringify({ type: "navigate", url: tab.url }));
-}, 1500);
+navigator.mediaDevices?.addEventListener("devicechange", () => void refreshDevices());
+
+setView("join");
+updateMediaButtons();

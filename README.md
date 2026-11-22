@@ -65,8 +65,9 @@ Start the local signaling server:
 4. Open `https://koddo.to/`, click the Telebee extension, and open the side panel.
 
 5. Everyone in the room enters the same room code. Camera/microphone access is optional.
-   The 6-character code joins automatically. A client automatically opens the host's current
-   movie URL and starts at the synchronized playback position.
+   Enter your name and a room code, then press **Join room** (pasting a 6-character code joins
+   immediately). The second person automatically opens the host's current page and starts at the
+   synchronized playback position. Rooms hold two people.
 
 ## Notes
 
@@ -75,4 +76,8 @@ Start the local signaling server:
 - For local/LAN use, set the server field to `ws://SERVER-IP:3001`.
 - Keep `server.js` running while the extension is used.
 - Playback sync looks for the first `<video>` element on the active page.
-- The room currently supports text chat and a mesh WebRTC video call for a small group.
+- Rooms are limited to two people (`TELEBEE_MAX_PEERS`). The first person in is the host; either
+  person can press the sync button to take control and push their position to the other.
+- For calls across strict networks, set `TURN_URLS`, `TURN_USERNAME` and `TURN_CREDENTIAL` on the
+  server (see `.env.example`). The server hands them to clients when they join.
+- The client reconnects automatically if the server connection drops.
